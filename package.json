@@ -1,0 +1,71 @@
+{
+    "name": "vjeko-al-mcp-bridge",
+    "displayName": "AL Language Model Tools — MCP Bridge",
+    "description": "Re-exposes the Microsoft AL extension's Language Model Tools as a localhost MCP server, so external agents (Claude Code, Cursor, etc.) can invoke them via this VS Code instance.",
+    "version": "0.0.1",
+    "publisher": "vjeko",
+    "license": "MIT",
+    "icon": "icon.png",
+    "engines": {
+        "vscode": "^1.100.0"
+    },
+    "categories": [
+        "AI",
+        "Other"
+    ],
+    "activationEvents": [
+        "workspaceContains:app.json"
+    ],
+    "main": "./out/extension.js",
+    "extensionDependencies": [
+        "ms-dynamics-smb.al"
+    ],
+    "enabledApiProposals": [
+        "testObserver"
+    ],
+    "contributes": {
+        "commands": [
+            {
+                "command": "vjekoAlMcpBridge.setupMcp",
+                "title": "Register MCP Bridge with Clients",
+                "category": "AL MCP Bridge"
+            }
+        ],
+        "configuration": {
+            "title": "AL LM Tools — MCP Bridge",
+            "properties": {
+                "vjekoAlMcpBridge.port": {
+                    "type": "number",
+                    "default": 39127,
+                    "description": "Localhost TCP port the MCP server listens on (Streamable HTTP transport)."
+                },
+                "vjekoAlMcpBridge.toolAllowlist": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [
+                        "al_symbolsearch",
+                        "al_getdiagnostics"
+                    ],
+                    "description": "AL LM tool ids to expose via MCP. Tools missing from this list are not registered with MCP clients."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "test": "node --import tsx --test src/*.test.ts"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/vscode": "^1.100.0",
+        "tsx": "^4.19.0",
+        "typescript": "^5.5.0"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.0"
+    }
+}
