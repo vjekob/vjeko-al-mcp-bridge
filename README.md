@@ -40,6 +40,39 @@ The bridge also republishes selected tools from `vscode.lm.tools` over MCP. By d
 
 Configure via `vjekoAlMcpBridge.toolAllowlist`. Use `*` to expose every LM tool the host sees.
 
+## Installation
+
+This extension uses VS Code's **proposed `testObserver` API** to read structured pass/fail results back from the AL test runner. There is no stable equivalent today — the only way one extension can read another extension's test results is via this proposed API.
+
+Two consequences:
+
+1. **It is not on the VS Code Marketplace.** Marketplace policy disallows extensions that depend on proposed APIs, so the bridge is distributed as a `.vsix`.
+2. **VS Code must be launched with the proposed API enabled for this specific extension.** Per-extension opt-in, via a command-line flag.
+
+### Install the VSIX
+
+Download `vjeko-al-mcp-bridge-<version>.vsix` and install it:
+
+```
+code --install-extension vjeko-al-mcp-bridge-<version>.vsix
+```
+
+Or in VS Code: `Extensions` view → `…` menu → **Install from VSIX…**.
+
+### Enable the proposed API
+
+Launch VS Code with:
+
+```
+code --enable-proposed-api vjeko.vjeko-al-mcp-bridge
+```
+
+Without this flag VS Code still loads the extension, but `vscode.tests.testResults` is unavailable and the `al_bridge_run_tests` / `al_bridge_run_failed_tests` tools cannot return pass/fail summaries — they report that no result event arrived.
+
+To make this permanent, edit your VS Code shortcut's `Target` to append the flag, or always launch VS Code from a wrapper script that adds it.
+
+> The `vsce publish --allow-proposed-apis` flag only bypasses the **publishing-side** check. It does not unlock the API on end users' machines: stable VS Code requires `--enable-proposed-api <publisher>.<extension>` at launch regardless of how the extension was distributed. That's why publishing to the Marketplace doesn't help here even with the bypass flag.
+
 ## How it works
 
 - **Transport:** Streamable HTTP, **stateless**. A fresh `Server` and `StreamableHTTPServerTransport` are created per incoming POST and torn down when the response is sent. No sessions, no `Mcp-Session-Id`, no server-side state to get out of sync.
