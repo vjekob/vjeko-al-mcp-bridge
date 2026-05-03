@@ -6,6 +6,10 @@
     "publisher": "vjeko",
     "license": "MIT",
     "icon": "icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/vjekob/vjeko-al-mcp-bridge.git"
+    },
     "engines": {
         "vscode": "^1.100.0"
     },
@@ -27,7 +31,12 @@
         "commands": [
             {
                 "command": "vjekoAlMcpBridge.setupMcp",
-                "title": "Register MCP Bridge with Clients",
+                "title": "Set Up MCP Server for Coding Agents",
+                "category": "AL MCP Bridge"
+            },
+            {
+                "command": "vjekoAlMcpBridge.enableProposedApi",
+                "title": "Enable Proposed API (durable)",
                 "category": "AL MCP Bridge"
             }
         ],
@@ -54,14 +63,20 @@
         }
     },
     "scripts": {
-        "vscode:prepublish": "npm run compile",
+        "vscode:prepublish": "npm run clean && npm run compile && npm run bundle",
+        "clean": "rimraf out",
         "compile": "tsc -p ./",
+        "bundle": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
         "watch": "tsc -watch -p ./",
-        "test": "node --import tsx --test src/*.test.ts"
+        "test": "node --import tsx --test src/*.test.ts",
+        "package": "vsce package --out .release/",
+        "publish": "vsce publish --allow-proposed-apis testObserver"
     },
     "devDependencies": {
         "@types/node": "^20.0.0",
         "@types/vscode": "^1.100.0",
+        "esbuild": "^0.25.0",
+        "rimraf": "^6.0.0",
         "tsx": "^4.19.0",
         "typescript": "^5.5.0"
     },

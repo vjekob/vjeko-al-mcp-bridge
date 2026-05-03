@@ -1,12 +1,15 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
 import * as path from 'path';
+import * as fs from 'fs/promises';
+import * as os from 'os';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createBridgeServer, LmHost, LmToolDescriptor } from './bridge';
 import { TestFailure, TestRunSummary, TestRunner } from './testRunner';
 import { BuildDiagnostic, BuildSeverity, BuildSummary, Builder } from './builder';
 import { Initializer, InitializeResult } from './initializer';
 import { CLIENTS, ClientConfig, buildConfigContent, isConfigured } from './setupMcp';
+import { EXTENSION_ID, buildArgvContent } from './proposedApi';
 
 let httpServer: http.Server | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -207,7 +210,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     context.subscriptions.push(
         vscode.commands.registerCommand('vjekoAlMcpBridge.setupMcp', () => runSetupMcp()),
+        vscode.commands.registerCommand('vjekoAlMcpBridge.enableProposedApi', () =>
+            runEnableProposedApi(),
+        ),
     );
+
+    void promptForProposedApiIfMissing();
 }
 
 interface ClientState {
@@ -272,6 +280,86 @@ async function runSetupMcp(): Promise<void> {
         log('setupMcp', { client: s.client.id, action: s.content === undefined ? 'created' : 'updated' });
     }
     await vscode.window.showInformationMessage(`AL MCP Bridge: ${reports.join('; ')}.`);
+}
+
+function getArgvJsonPath(): string {
+    const isInsiders = vscode.env.appName.toLowerCase().includes('insiders');
+    return path.join(os.homedir(), isInsiders ? '.vscode-insiders' : '.vscode', 'argv.json');
+}
+
+function isProposedApiAvailable(): boolean {
+    return typeof (vscode.tests as { testResults?: unknown }).testResults !== 'undefined';
+}
+
+async function promptForProposedApiIfMissing(): Promise<void> {
+    if (isProposedApiAvailable()) return;
+    log('proposed API not enabled at runtime — prompting user');
+    const choice = await vscode.window.showWarningMessage(
+        'AL MCP Bridge: the proposed `testObserver` API is not enabled, so test result reading is disabled. Configure it now? VS Code must be fully restarted afterwards.',
+        'Configure',
+        'Not now',
+    );
+    if (choice === 'Configure') {
+        await runEnableProposedApi();
+    }
+}
+
+async function runEnableProposedApi(): Promise<void> {
+    const argvPath = getArgvJsonPath();
+    log('enableProposedApi START', { argvPath });
+
+    let existing: string | undefined;
+    try {
+        existing = await fs.readFile(argvPath, 'utf-8');
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            log('enableProposedApi: read failed', String(err));
+            await vscode.window.showErrorMessage(
+                `AL MCP Bridge: failed to read ${argvPath}: ${String(err)}`,
+            );
+            return;
+        }
+        existing = undefined;
+    }
+
+    const result = buildArgvContent(existing);
+
+    if (result.action === 'parse-failed') {
+        log('enableProposedApi: argv.json could not be parsed');
+        const choice = await vscode.window.showErrorMessage(
+            `AL MCP Bridge: ${argvPath} is not valid JSON. Open it manually and add "${EXTENSION_ID}" to the "enable-proposed-api" array, then restart VS Code.`,
+            'Open File',
+        );
+        if (choice === 'Open File') {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(argvPath));
+            await vscode.window.showTextDocument(doc);
+        }
+        return;
+    }
+
+    if (result.action === 'already-configured') {
+        log('enableProposedApi: already configured');
+        await vscode.window.showInformationMessage(
+            `AL MCP Bridge: ${EXTENSION_ID} is already listed in ${argvPath}. If the bridge still cannot read test results, fully quit VS Code (not just Reload Window) and reopen.`,
+        );
+        return;
+    }
+
+    try {
+        await fs.mkdir(path.dirname(argvPath), { recursive: true });
+        await fs.writeFile(argvPath, result.content, 'utf-8');
+    } catch (err) {
+        log('enableProposedApi: write failed', String(err));
+        await vscode.window.showErrorMessage(
+            `AL MCP Bridge: failed to write ${argvPath}: ${String(err)}`,
+        );
+        return;
+    }
+
+    log('enableProposedApi DONE', { action: result.action });
+    await vscode.window.showInformationMessage(
+        `AL MCP Bridge: proposed API enabled in ${argvPath}. Fully quit and reopen VS Code (not just Reload Window) for the change to take effect.`,
+    );
 }
 
 function pickWorkspaceRoot(): vscode.Uri | undefined {

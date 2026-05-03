@@ -6,15 +6,9 @@ When this extension is active, the running VS Code instance becomes a tool host 
 
 ## Why this exists
 
-VS Code's **Language Model Tool API** lets extensions register tools that LLMs can call, but in practice those tools are reachable only inside VS Code's own chat surface (Copilot Chat). An external agent that wants to use them runs into three walls:
+The AL Language extension registers its tools through VS Code's **Language Model Tool API**, which only surfaces them inside VS Code's own chat — i.e. to GitHub Copilot. Any other coding agent (Claude Code, Cursor, anything running in a separate process) has no way to reach them. Building and running AL tests should not be Copilot-only.
 
-1. **It can't reach them.** The tools live behind VS Code's chat APIs, not on a network socket. An agent running in a separate process has no way in.
-2. **Confirmation prompts.** Even where invocation is technically possible (e.g. via `vscode.lm.invokeTool`), some tools surface a modal "Allow this tool to run?" prompt every call. That breaks any non-interactive workflow.
-3. **Wrong abstraction for some jobs.** Running tests and building an AL project are first-class VS Code operations (testing API, `al.fullPackage` command). Routing them through the LM-tool flow adds a layer that only gets in the way.
-
-The bridge solves all three by being a VS Code extension itself — same process as the AL extension, full access to `vscode.*` — that **re-publishes** the capabilities over an MCP transport. External agents see a normal MCP server. The bridge does the translation.
-
-The deeper point worth keeping: it is possible to expose VS Code's APIs (testing API, command palette, language model tools, diagnostics) to outside MCP clients by hosting the MCP server *inside* a VS Code extension. This bridge is a working demonstration scoped to AL, but the pattern generalizes.
+The bridge fixes that by being a VS Code extension itself — same process as the AL extension, full access to `vscode.*` — that re-publishes the relevant capabilities over an MCP transport. External agents see a normal MCP server.
 
 ## What it exposes
 
@@ -61,25 +55,33 @@ Or in VS Code: `Extensions` view → `…` menu → **Install from VSIX…**.
 
 ### Enable the proposed API
 
-Launch VS Code with:
+The proposed API has to be enabled per-extension in VS Code. There are three ways to do it; pick one.
+
+**Recommended: durable, via the bundled command.** After installing the VSIX, open the Command Palette and run **AL MCP Bridge: Enable Proposed API (durable)** (id `vjekoAlMcpBridge.enableProposedApi`). This writes the right entry into `argv.json` (`%USERPROFILE%\.vscode\argv.json` on Windows, `~/.vscode/argv.json` elsewhere; `.vscode-insiders` for Insiders) so VS Code applies the flag on every launch, no matter how it's started. Existing entries in `argv.json` are preserved. **You must fully quit and reopen VS Code afterwards — Reload Window is not enough.**
+
+The extension also detects on activation whether the proposed API is missing and prompts you to run this command, so for most users this happens automatically.
+
+**Alternative 1: durable, by hand.** Open `argv.json` via Command Palette → **Preferences: Configure Runtime Arguments**, and add:
+
+```json
+{
+  "enable-proposed-api": ["vjeko.vjeko-al-mcp-bridge"]
+}
+```
+
+Then fully quit and reopen VS Code.
+
+**Alternative 2: per-launch.** Start VS Code with:
 
 ```
 code --enable-proposed-api vjeko.vjeko-al-mcp-bridge
 ```
 
-Without this flag VS Code still loads the extension, but `vscode.tests.testResults` is unavailable and the `al_bridge_run_tests` / `al_bridge_run_failed_tests` tools cannot return pass/fail summaries — they report that no result event arrived.
+This only applies to that specific launch. Useful for one-off testing.
 
-To make this permanent, edit your VS Code shortcut's `Target` to append the flag, or always launch VS Code from a wrapper script that adds it.
+Without one of these in place, VS Code still loads the extension, but `vscode.tests.testResults` is unavailable and `al_bridge_run_tests` / `al_bridge_run_failed_tests` cannot return pass/fail summaries — they report that no result event arrived.
 
-> The `vsce publish --allow-proposed-apis` flag only bypasses the **publishing-side** check. It does not unlock the API on end users' machines: stable VS Code requires `--enable-proposed-api <publisher>.<extension>` at launch regardless of how the extension was distributed. That's why publishing to the Marketplace doesn't help here even with the bypass flag.
-
-## How it works
-
-- **Transport:** Streamable HTTP, **stateless**. A fresh `Server` and `StreamableHTTPServerTransport` are created per incoming POST and torn down when the response is sent. No sessions, no `Mcp-Session-Id`, no server-side state to get out of sync.
-- **Timeouts:** every `tools/list` and `tools/call` is wrapped in a 5-minute timeout so a stuck VS Code command can't hang the client forever.
-- **Cold-start retry (in `al_bridge_run_tests`):** when AL hasn't yet enumerated the tests in the file, `testing.run.uri` returns almost instantly with no result event. The bridge detects this (fast trigger + no event) and retries up to 5 times with a 1s backoff. The retry lives **inside the tool** so callers don't have to implement it.
-- **Outer retry + terminal failure:** every tool execution is wrapped in a generic retry loop — up to 5 attempts with 1s backoff between them. Validation errors (missing/invalid arguments, "not exposed") are *not* retried; they fail fast. When all retries exhaust, the bridge throws a `BridgeTerminalError` and the HTTP layer **destroys the underlying TCP socket** so the agent gets a hard connection abort instead of a soft error response it might silently ignore. This matters when the AL extension is not yet loaded: instead of returning fake-success diagnostics or hanging, the bridge gives up loudly after ~5 seconds.
-- **Logging:** activity is written to the `AL MCP Bridge` output channel inside VS Code.
+> The `vsce publish --allow-proposed-apis` flag only bypasses the **publishing-side** check. It does not unlock the API on end users' machines: stable VS Code requires `--enable-proposed-api <publisher>.<extension>` (or the equivalent `argv.json` entry) at launch regardless of how the extension was distributed. That's why publishing to the Marketplace doesn't help here even with the bypass flag.
 
 ## Configuration
 
@@ -98,7 +100,7 @@ The bridge activates when the workspace contains an `app.json` (i.e. when it is 
 
 The extension contributes a single VS Code command:
 
-> **AL MCP Bridge: Register MCP Bridge with Clients** &nbsp;(id: `vjekoAlMcpBridge.setupMcp`)
+> **AL MCP Bridge: Set Up MCP Server for Coding Agents** &nbsp;(id: `vjekoAlMcpBridge.setupMcp`)
 
 Run it from the Command Palette (`Ctrl+Shift+P` → start typing "AL MCP Bridge"). The command writes the right project-scoped MCP config file for each client you select, so external agents — currently **Claude Code** and **Cursor** — can discover this bridge.
 
@@ -150,12 +152,6 @@ Each client gets the same logical entry — an HTTP server pointed at `http://12
   }
   ```
 
-### Idempotence and merging
-
-- Re-running the command after registering some clients only offers the rest.
-- If a target file already has other MCP servers configured, those entries are preserved untouched — only the `al-mcp-bridge` key is added or updated.
-- If a target file is corrupt JSON, the command starts a fresh document rather than refusing — so a malformed file does not block the workflow.
-
 ### Scope
 
 The command is **project-scoped**. It only touches files inside the open workspace folder. It never modifies user-scope MCP config (`~\.cursor\mcp.json`, `~\.claude.json`, etc.).
@@ -164,31 +160,4 @@ The command is **project-scoped**. It only touches files inside the open workspa
 
 Clients usually need a reload to pick up new MCP servers — restart Cursor or restart your Claude Code CLI session. Then the bridge's tools (`al_bridge_run_tests`, `al_bridge_run_failed_tests`, `al_bridge_build`, plus any allowlisted passthrough tools) are visible to the agent.
 
-## Development
-
-```
-npm install
-npm run watch    # tsc --watch
-npm test         # node --test via tsx
-```
-
-Press `F5` to launch an Extension Development Host with the proposed `testObserver` API enabled (required for reading test results back from the testing API). The launch profile does not bake in a workspace path — open whichever AL workspace you want to drive.
-
-## Layout
-
-```
-src/
-  bridge.ts           MCP server factory, tool registration, timeouts.
-  testRunner.ts       TestRunner interface + result formatting.
-  builder.ts          Builder interface + diagnostic formatting.
-  setupMcp.ts         Pure logic for the "register with MCP clients" command:
-                      per-client schema, isConfigured, buildConfigContent.
-  extension.ts        VS Code glue: HTTP server, LmHost / TestRunner / Builder
-                      implementations, setupMcp command registration.
-  bridge.test.ts      Bridge / tool tests.
-  setupMcp.test.ts    Pure-logic tests for the registration command.
-  vscode.proposed.testObserver.d.ts
-                      Type augmentation for the proposed testing-results API.
-```
-
-`bridge.ts` knows nothing about VS Code — it depends on small interfaces (`LmHost`, `TestRunner`, `Builder`) that `extension.ts` implements. That split is what makes the tests runnable under plain `node --test`.
+Bridge activity is written to the **AL MCP Bridge** output channel inside VS Code — open it from the Output panel if you need to see what the bridge is doing.

@@ -2,3 +2,6 @@ out/
 node_modules/
 *.vsix
 .vscode-test/
+
+# VSIX files in the .release directory must still be committed!
+!.release/*.vsix
